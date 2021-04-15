@@ -1,8 +1,10 @@
 
 #include "RadioInterface.h"
+#include "Channels.h"
 #include "MeshRadio.h"
 #include "MeshService.h"
 #include "NodeDB.h"
+#include "Router.h"
 #include "assert.h"
 #include "configuration.h"
 #include "sleep.h"
@@ -23,8 +25,26 @@ const RegionInfo regions[] = {
     RDEF(KR, 921.9f, 0.2f, 8, 0),      // KR channel settings (KR920-923) Start from TTN download channel
                                        // freq. (921.9f is for download, others are for uplink)
     RDEF(TW, 923.0f, 0.2f, 10, 0),     // TW channel settings (AS2 bandplan 923-925MHz)
+    RDEF(RU, 868.9f, 0.2f, 2, 20),     // See notes below
     RDEF(Unset, 903.08f, 2.16f, 13, 0) // Assume US freqs if unset, Must be last
 };
+
+/* Notes about the RU bandplan (from @denis-d in https://meshtastic.discourse.group/t/russian-band-plan-proposal/2786/2):
+
+According to Annex 12 to GKRCh (National Radio Frequency Commission) decision № 18-46-03-1 (September 11th 2018)
+https://digital.gov.ru/uploaded/files/prilozhenie-12-k-reshenyu-gkrch-18-46-03-1.pdf 1 We have 3 options for 868 MHz:
+
+864,0 - 865,0 MHz ERP 25mW, Duty Cycle 0.1% (3.6 sec in hour) or LBT (Listen Before Talk), prohibited in airports.
+866,0 - 868,0 MHz ERP 25mW, Duty Cycle 1% or LBT, PSD (Power Spectrum Density) 1000mW/MHz, prohibited in airports
+868,7 - 869,2 MHz ERP 100mW, Duty Cycle 10% or LBT, no resctrictions
+and according to RP2-1.0.2 LoRaWAN® Regional Parameters RP2-1.0.2 LoRaWAN® Regional Parameters - LoRa Alliance®
+I propose to use following meshtastic bandplan:
+1 channel - central frequency 868.9MHz 125kHz band
+Protective band - 75kHz
+2 channel - central frequency 869.1MHz 125kHz band
+
+RDEF(RU, 868.9f, 0.2f, 2, 20)
+*/
 
 const RegionInfo *myRegion;
 
@@ -36,7 +56,7 @@ void initRegion()
     myRegion = r;
     DEBUG_MSG("Wanted region %d, using %s\n", radioConfig.preferences.region, r->name);
 
-    myNodeInfo.num_channels = myRegion->numChannels; // Tell our android app how many channels we have
+    myNodeInfo.num_bands = myRegion->numChannels; // Tell our android app how many channels we have
 }
 
 /**
@@ -92,6 +112,8 @@ uint32_t RadioInterface::getPacketTime(MeshPacket *p)
 /** The delay to use for retransmitting dropped packets */
 uint32_t RadioInterface::getRetransmissionMsec(const MeshPacket *p)
 {
+    assert(shortPacketMsec); // Better be non zero
+
     // was 20 and 22 secs respectively, but now with shortPacketMsec as 2269, this should give the same range
     return random(9 * shortPacketMsec, 10 * shortPacketMsec);
 }
@@ -117,27 +139,13 @@ uint32_t RadioInterface::getTxDelayMsec()
 
 void printPacket(const char *prefix, const MeshPacket *p)
 {
-    DEBUG_MSG("%s (id=0x%08x Fr0x%02x To0x%02x, WantAck%d, HopLim%d", prefix, p->id, p->from & 0xff, p->to & 0xff, p->want_ack,
-              p->hop_limit);
+    DEBUG_MSG("%s (id=0x%08x Fr0x%02x To0x%02x, WantAck%d, HopLim%d Ch0x%x", prefix, p->id, p->from & 0xff, p->to & 0xff,
+              p->want_ack, p->hop_limit, p->channel);
     if (p->which_payloadVariant == MeshPacket_decoded_tag) {
         auto &s = p->decoded;
-        switch (s.which_payloadVariant) {
-        case SubPacket_data_tag:
-            DEBUG_MSG(" Portnum=%d", s.data.portnum);
-            break;
-        case SubPacket_position_tag:
-            DEBUG_MSG(" Payload:Position");
-            break;
-        case SubPacket_user_tag:
-            DEBUG_MSG(" Payload:User");
-            break;
-        case 0:
-            DEBUG_MSG(" Payload:None");
-            break;
-        default:
-            DEBUG_MSG(" Payload:%d", s.which_payloadVariant);
-            break;
-        }
+
+        DEBUG_MSG(" Portnum=%d", s.portnum);
+
         if (s.want_response)
             DEBUG_MSG(" WANTRESP");
 
@@ -147,10 +155,14 @@ void printPacket(const char *prefix, const MeshPacket *p)
         if (s.dest != 0)
             DEBUG_MSG(" dest=%08x", s.dest);
 
+        if (s.request_id)
+            DEBUG_MSG(" requestId=%0x", s.request_id);
+
+        /* now inside Data and therefore kinda opaque
         if (s.which_ackVariant == SubPacket_success_id_tag)
             DEBUG_MSG(" successId=%08x", s.ackVariant.success_id);
         else if (s.which_ackVariant == SubPacket_fail_id_tag)
-            DEBUG_MSG(" failId=%08x", s.ackVariant.fail_id);
+            DEBUG_MSG(" failId=%08x", s.ackVariant.fail_id); */
     } else {
         DEBUG_MSG(" encrypted");
     }
@@ -161,18 +173,24 @@ void printPacket(const char *prefix, const MeshPacket *p)
     if (p->rx_snr != 0.0) {
         DEBUG_MSG(" rxSNR=%g", p->rx_snr);
     }
-    if(p->priority != 0)
+    if (p->priority != 0)
         DEBUG_MSG(" priority=%d", p->priority);
-        
+
     DEBUG_MSG(")\n");
 }
 
 RadioInterface::RadioInterface()
 {
-    assert(sizeof(PacketHeader) == 4 || sizeof(PacketHeader) == 16); // make sure the compiler did what we expected
+    assert(sizeof(PacketHeader) == 16); // make sure the compiler did what we expected
 
     // Can't print strings this early - serial not setup yet
     // DEBUG_MSG("Set meshradio defaults name=%s\n", channelSettings.name);
+}
+
+bool RadioInterface::reconfigure()
+{
+    applyModemConfig();
+    return true;
 }
 
 bool RadioInterface::init()
@@ -186,6 +204,8 @@ bool RadioInterface::init()
     // we now expect interfaces to operate in promiscous mode
     // radioIf.setThisAddress(nodeDB.getNodeNum()); // Note: we must do this here, because the nodenum isn't inited at constructor
     // time.
+
+    applyModemConfig();
 
     return true;
 }
@@ -252,6 +272,7 @@ void RadioInterface::applyModemConfig()
     // Set up default configuration
     // No Sync Words in LORA mode
 
+    auto channelSettings = channels.getPrimary();
     if (channelSettings.spread_factor == 0) {
         switch (channelSettings.modem_config) {
         case ChannelSettings_ModemConfig_Bw125Cr45Sf128: ///< Bw = 125 kHz, Cr = 4/5, Sf = 128chips/symbol, CRC on. Default medium
@@ -296,8 +317,9 @@ void RadioInterface::applyModemConfig()
     assert(myRegion); // Should have been found in init
 
     // If user has manually specified a channel num, then use that, otherwise generate one by hashing the name
-    int channel_num = (channelSettings.channel_num ? channelSettings.channel_num - 1 : hash(channelName)) % myRegion->numChannels;
-    freq = myRegion->freq + myRegion->spacing * channel_num;
+    const char *channelName = channels.getName(channels.getPrimaryIndex());
+    int channel_num = channelSettings.channel_num ? channelSettings.channel_num - 1 : hash(channelName) % myRegion->numChannels;
+    freq = myRegion->freq + radioConfig.preferences.frequency_offset + myRegion->spacing * channel_num;
 
     DEBUG_MSG("Set radio: name=%s, config=%u, ch=%d, power=%d\n", channelName, channelSettings.modem_config, channel_num, power);
     DEBUG_MSG("Radio myRegion->freq: %f\n", myRegion->freq);
@@ -339,8 +361,8 @@ ErrorCode SimRadio::send(MeshPacket *p)
 
 void RadioInterface::deliverToReceiver(MeshPacket *p)
 {
-    assert(rxDest);
-    assert(rxDest->enqueue(p, 0)); // NOWAIT - fixme, if queue is full, delete older messages
+    if (router)
+        router->enqueueReceivedMessage(p);
 }
 
 /***
@@ -360,6 +382,7 @@ size_t RadioInterface::beginSending(MeshPacket *p)
     h->from = p->from;
     h->to = p->to;
     h->id = p->id;
+    h->channel = p->channel;
     assert(p->hop_limit <= HOP_MAX);
     h->flags = p->hop_limit | (p->want_ack ? PACKET_FLAGS_WANT_ACK_MASK : 0);
 

@@ -2,9 +2,9 @@
 #include "BluetoothCommon.h"
 #include "configuration.h"
 #include "main.h"
+#include "mesh/PhoneAPI.h"
+#include "mesh/mesh-pb-constants.h"
 #include <bluefruit.h>
-
-
 
 static BLEService meshBleService = BLEService(BLEUuid(MESH_SERVICE_UUID_16));
 static BLECharacteristic fromNum = BLECharacteristic(BLEUuid(FROMNUM_UUID_16));
@@ -155,7 +155,6 @@ void fromNumAuthorizeCb(uint16_t conn_hdl, BLECharacteristic *chr, ble_gatts_evt
 void setupMeshService(void)
 {
     bluetoothPhoneAPI = new BluetoothPhoneAPI();
-    bluetoothPhoneAPI->init();
 
     meshBleService.begin();
 
@@ -213,6 +212,7 @@ void NRF52Bluetooth::setup()
 {
     // Initialise the Bluefruit module
     DEBUG_MSG("Initialise the Bluefruit nRF52 module\n");
+    Bluefruit.autoConnLed(false);
     Bluefruit.begin();
 
     // Set the advertised device name (keep it short!)
@@ -224,7 +224,8 @@ void NRF52Bluetooth::setup()
 
     // Configure and Start the Device Information Service
     DEBUG_MSG("Configuring the Device Information Service\n");
-    bledis.setManufacturer(HW_VENDOR);
+    // FIXME, we should set a mfg string based on our HW_VENDOR enum
+    // bledis.setManufacturer(HW_VENDOR);
     bledis.setModel(optstr(HW_VERSION));
     bledis.setFirmwareRev(optstr(APP_VERSION));
     bledis.begin();

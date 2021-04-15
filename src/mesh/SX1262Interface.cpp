@@ -23,8 +23,6 @@ bool SX1262Interface::init()
     pinMode(SX1262_POWER_EN, OUTPUT);
 #endif
 
-    RadioLibInterface::init();
-
 #ifdef SX1262_RXEN                  // set not rx or tx mode
     digitalWrite(SX1262_RXEN, LOW); // Set low before becoming an output
     pinMode(SX1262_RXEN, OUTPUT);
@@ -37,12 +35,12 @@ bool SX1262Interface::init()
 #ifndef SX1262_E22
     float tcxoVoltage = 0; // None - we use an XTAL
 #else
-    float tcxoVoltage =
-        1.8; // E22 uses DIO3 to power tcxo per https://github.com/jgromes/RadioLib/issues/12#issuecomment-520695575
+    // Use DIO3 to power tcxo per https://github.com/jgromes/RadioLib/issues/12#issuecomment-520695575
+    float tcxoVoltage = 1.8;
 #endif
     bool useRegulatorLDO = false; // Seems to depend on the connection to pin 9/DCC_SW - if an inductor DCDC?
 
-    applyModemConfig();
+    RadioLibInterface::init();
 
     if (power == 0)
         power = SX1262_MAX_POWER;
@@ -72,20 +70,23 @@ bool SX1262Interface::init()
 
 bool SX1262Interface::reconfigure()
 {
-    applyModemConfig();
+    RadioLibInterface::reconfigure();
 
     // set mode to standby
     setStandby();
 
     // configure publicly accessible settings
     int err = lora.setSpreadingFactor(sf);
-    if(err != ERR_NONE) recordCriticalError(CriticalErrorCode_InvalidRadioSetting);
+    if (err != ERR_NONE)
+        recordCriticalError(CriticalErrorCode_InvalidRadioSetting);
 
     err = lora.setBandwidth(bw);
-    if(err != ERR_NONE) recordCriticalError(CriticalErrorCode_InvalidRadioSetting);
+    if (err != ERR_NONE)
+        recordCriticalError(CriticalErrorCode_InvalidRadioSetting);
 
     err = lora.setCodingRate(cr);
-    if(err != ERR_NONE) recordCriticalError(CriticalErrorCode_InvalidRadioSetting);
+    if (err != ERR_NONE)
+        recordCriticalError(CriticalErrorCode_InvalidRadioSetting);
 
     // Hmm - seems to lower SNR when the signal levels are high.  Leaving off for now...
     err = lora.setRxGain(true);
@@ -101,7 +102,8 @@ bool SX1262Interface::reconfigure()
     assert(err == ERR_NONE);
 
     err = lora.setFrequency(freq);
-    if(err != ERR_NONE) recordCriticalError(CriticalErrorCode_InvalidRadioSetting);
+    if (err != ERR_NONE)
+        recordCriticalError(CriticalErrorCode_InvalidRadioSetting);
 
     if (power > 22) // This chip has lower power limits than some
         power = 22;
@@ -142,6 +144,7 @@ void SX1262Interface::addReceiveMetadata(MeshPacket *mp)
 {
     // DEBUG_MSG("PacketStatus %x\n", lora.getPacketStatus());
     mp->rx_snr = lora.getSNR();
+    mp->rx_rssi = lround(lora.getRSSI());
 }
 
 /** We override to turn on transmitter power as needed.

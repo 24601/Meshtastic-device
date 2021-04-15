@@ -28,9 +28,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "Screen.h"
 #include "configuration.h"
 #include "fonts.h"
+#include "gps/RTC.h"
 #include "graphics/images.h"
 #include "main.h"
 #include "mesh-pb-constants.h"
+#include "mesh/Channels.h"
 #include "plugins/TextMessagePlugin.h"
 #include "target_specific.h"
 #include "utils.h"
@@ -142,34 +144,34 @@ static void drawBootScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int1
     drawIconScreen(region, display, state, x, y);
 }
 
+#ifdef HAS_EINK
 /// Used on eink displays while in deep sleep
 static void drawSleepScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
     drawIconScreen("Sleeping...", display, state, x, y);
 }
+#endif
 
 static void drawPluginFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
     uint8_t plugin_frame;
     // there's a little but in the UI transition code
-    // where it invokes the function at the correct offset 
+    // where it invokes the function at the correct offset
     // in the array of "drawScreen" functions; however,
-    // the passed-state doesn't quite reflect the "current" 
+    // the passed-state doesn't quite reflect the "current"
     // screen, so we have to detect it.
     if (state->frameState == IN_TRANSITION && state->transitionFrameRelationship == INCOMING) {
-        // if we're transitioning from the end of the frame list back around to the first 
+        // if we're transitioning from the end of the frame list back around to the first
         // frame, then we want this to be `0`
         plugin_frame = state->transitionFrameTarget;
-    }
-    else {
+    } else {
         // otherwise, just display the plugin frame that's aligned with the current frame
         plugin_frame = state->currentFrame;
-        //DEBUG_MSG("Screen is not in transition.  Frame: %d\n\n", plugin_frame);
+        // DEBUG_MSG("Screen is not in transition.  Frame: %d\n\n", plugin_frame);
     }
-    //DEBUG_MSG("Drawing Plugin Frame %d\n\n", plugin_frame);
+    // DEBUG_MSG("Drawing Plugin Frame %d\n\n", plugin_frame);
     MeshPlugin &pi = *pluginFrames.at(plugin_frame);
-    pi.drawFrame(display,state,x,y);
-    
+    pi.drawFrame(display, state, x, y);
 }
 
 static void drawFrameBluetooth(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
@@ -201,10 +203,9 @@ static void drawFrameFirmware(OLEDDisplay *display, OLEDDisplayUiState *state, i
     display->setFont(FONT_SMALL);
     display->drawString(64 + x, FONT_HEIGHT_SMALL + y + 2, "Please wait...");
 
-    //display->setFont(FONT_LARGE);
-    //display->drawString(64 + x, 26 + y, btPIN);
+    // display->setFont(FONT_LARGE);
+    // display->drawString(64 + x, 26 + y, btPIN);
 }
-
 
 /// Draw the last text message we received
 static void drawCriticalFaultFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
@@ -228,7 +229,7 @@ static void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state
     displayedNodeNum = 0; // Not currently showing a node pane
 
     MeshPacket &mp = devicestate.rx_text_message;
-    NodeInfo *node = nodeDB.getNode(mp.from);
+    NodeInfo *node = nodeDB.getNode(getFrom(&mp));
     // DEBUG_MSG("drawing text message from 0x%x: %s\n", mp.from,
     // mp.decoded.variant.data.decoded.bytes);
 
@@ -243,8 +244,7 @@ static void drawTextMessageFrame(OLEDDisplay *display, OLEDDisplayUiState *state
 
     // the max length of this buffer is much longer than we can possibly print
     static char tempBuf[96];
-    assert(mp.decoded.which_payloadVariant == SubPacket_data_tag);
-    snprintf(tempBuf, sizeof(tempBuf), "         %s", mp.decoded.data.payload.bytes);
+    snprintf(tempBuf, sizeof(tempBuf), "         %s", mp.decoded.payload.bytes);
 
     display->drawStringMaxWidth(4 + x, 10 + y, SCREEN_WIDTH - (6 + x), tempBuf);
 }
@@ -717,6 +717,7 @@ void Screen::handleSetOn(bool on)
             dispdev.displayOn();
             enabled = true;
             setInterval(0); // Draw ASAP
+            runASAP = true;
         } else {
             DEBUG_MSG("Turning off screen\n");
             dispdev.displayOff();
@@ -791,7 +792,8 @@ void Screen::setup()
     powerStatusObserver.observe(&powerStatus->onNewStatus);
     gpsStatusObserver.observe(&gpsStatus->onNewStatus);
     nodeStatusObserver.observe(&nodeStatus->onNewStatus);
-    textMessageObserver.observe(textMessagePlugin);
+    if (textMessagePlugin)
+        textMessageObserver.observe(textMessagePlugin);
 }
 
 void Screen::forceDisplay()
@@ -818,9 +820,6 @@ int32_t Screen::runOnce()
         showingBootScreen = false;
     }
 
-    // Update the screen last, after we've figured out what to show.
-    debug_info()->setChannelNameStatus(getChannelName());
-
     // Process incoming commands.
     for (;;) {
         ScreenCmd cmd;
@@ -842,7 +841,7 @@ int32_t Screen::runOnce()
             break;
         case Cmd::START_FIRMWARE_UPDATE_SCREEN:
             handleStartFirmwareUpdateScreen();
-            break;            
+            break;
         case Cmd::STOP_BLUETOOTH_PIN_SCREEN:
         case Cmd::STOP_BOOT_SCREEN:
             setFrames();
@@ -852,7 +851,7 @@ int32_t Screen::runOnce()
             free(cmd.print_text);
             break;
         default:
-            DEBUG_MSG("BUG: invalid cmd");
+            DEBUG_MSG("BUG: invalid cmd\n");
         }
     }
 
@@ -936,7 +935,7 @@ void Screen::setFrames()
     for (auto i = pluginFrames.begin(); i != pluginFrames.end(); ++i) {
         normalFrames[numframes++] = drawPluginFrame;
     }
-    
+
     DEBUG_MSG("Added plugins.  numframes: %d\n", numframes);
 
     // If we have a critical fault, show it first
@@ -1055,6 +1054,7 @@ void Screen::setFastFramerate()
     targetFramerate = SCREEN_TRANSITION_FRAMERATE;
     ui.setTargetFPS(targetFramerate);
     setInterval(0); // redraw ASAP
+    runASAP = true;
 }
 
 void DebugInfo::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
@@ -1069,7 +1069,8 @@ void DebugInfo::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
     char channelStr[20];
     {
         concurrency::LockGuard guard(&lock);
-        snprintf(channelStr, sizeof(channelStr), "%s", channelName.c_str());
+        auto chName = channels.getPrimaryName();
+        snprintf(channelStr, sizeof(channelStr), "%s", chName);
     }
 
     // Display power status
@@ -1276,8 +1277,8 @@ void DebugInfo::drawFrameSettings(OLEDDisplay *display, OLEDDisplayUiState *stat
         display->drawString(x, y, String("USB"));
     }
 
-    display->drawString(x + SCREEN_WIDTH - display->getStringWidth("Mode " + String(channelSettings.modem_config)), y,
-                        "Mode " + String(channelSettings.modem_config));
+    auto mode = "Mode " + String(channels.getPrimary().modem_config);
+    display->drawString(x + SCREEN_WIDTH - display->getStringWidth(mode), y, mode);
 
     // Line 2
     uint32_t currentMillis = millis();
@@ -1285,14 +1286,41 @@ void DebugInfo::drawFrameSettings(OLEDDisplay *display, OLEDDisplayUiState *stat
     uint32_t minutes = seconds / 60;
     uint32_t hours = minutes / 60;
     uint32_t days = hours / 24;
-    currentMillis %= 1000;
-    seconds %= 60;
-    minutes %= 60;
-    hours %= 24;
+    // currentMillis %= 1000;
+    // seconds %= 60;
+    // minutes %= 60;
+    // hours %= 24;
 
-    display->drawString(x, y + FONT_HEIGHT_SMALL * 1,
-                        String(days) + "d " + (hours < 10 ? "0" : "") + String(hours) + ":" + (minutes < 10 ? "0" : "") +
-                            String(minutes) + ":" + (seconds < 10 ? "0" : "") + String(seconds));
+    // Show uptime as days, hours, minutes OR seconds
+    String uptime;
+    if (days >= 2)
+        uptime += String(days) + "d ";
+    else if (hours >= 2)
+        uptime += String(hours) + "h ";
+    else if (minutes >= 1)
+        uptime += String(minutes) + "m ";
+    else
+        uptime += String(seconds) + "s ";
+
+    uint32_t rtc_sec = getValidTime(RTCQuality::RTCQualityFromNet);
+    if (rtc_sec > 0) {
+        long hms = rtc_sec % SEC_PER_DAY;
+        // hms += tz.tz_dsttime * SEC_PER_HOUR;
+        // hms -= tz.tz_minuteswest * SEC_PER_MIN;
+        // mod `hms` to ensure in positive range of [0...SEC_PER_DAY)
+        hms = (hms + SEC_PER_DAY) % SEC_PER_DAY;
+
+        // Tear apart hms into h:m:s
+        int hour = hms / SEC_PER_HOUR;
+        int min = (hms % SEC_PER_HOUR) / SEC_PER_MIN;
+        int sec = (hms % SEC_PER_HOUR) % SEC_PER_MIN; // or hms % SEC_PER_MIN
+
+        char timebuf[9];
+        snprintf(timebuf, sizeof(timebuf), "%02d:%02d:%02d", hour, min, sec);
+        uptime += timebuf;
+    }
+
+    display->drawString(x, y + FONT_HEIGHT_SMALL * 1, uptime);
 
 #ifndef NO_ESP32
     // Show CPU Frequency.

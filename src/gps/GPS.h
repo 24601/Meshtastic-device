@@ -47,7 +47,7 @@ class GPS : private concurrency::OSThread
 
     GPS() : concurrency::OSThread("GPS") {}
 
-    virtual ~GPS() {} // FIXME, we really should unregister our sleep observer
+    virtual ~GPS();
 
     /** We will notify this observable anytime GPS state has changed meaningfully */
     Observable<const meshtastic::GPSStatus *> newStatus;
@@ -70,6 +70,9 @@ class GPS : private concurrency::OSThread
      * Or set to false, to disallow any sort of waking
      * */
     void forceWake(bool on);
+
+    // Some GPS modules (ublock) require factory reset
+    virtual bool factoryReset() { return true; }
 
   protected:
     /// Do gps chipset specific init, return true for success
@@ -144,5 +147,9 @@ class GPS : private concurrency::OSThread
 
     virtual int32_t runOnce();
 };
+
+// Creates an instance of the GPS class. 
+// Returns the new instance or null if the GPS is not present.
+GPS* createGps();
 
 extern GPS *gps;

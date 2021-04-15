@@ -3,6 +3,17 @@
 #include "configuration.h"
 #include <Arduino.h>
 
+static WiFiServerPort *apiPort;
+
+void initApiServer()
+{
+    // Start API server on port 4403
+    if (!apiPort) {
+        apiPort = new WiFiServerPort();
+        apiPort->init();
+    }
+}
+
 WiFiServerAPI::WiFiServerAPI(WiFiClient &_client) : StreamAPI(&client), client(_client)
 {
     DEBUG_MSG("Incoming wifi connection\n");
@@ -29,18 +40,20 @@ void WiFiServerAPI::onConnectionChanged(bool connected)
 }
 
 /// override close to also shutdown the TCP link
-void WiFiServerAPI::close() {
+void WiFiServerAPI::close()
+{
     client.stop(); // drop tcp connection
     StreamAPI::close();
 }
 
-bool WiFiServerAPI::loop()
+int32_t WiFiServerAPI::runOnce()
 {
     if (client.connected()) {
-        StreamAPI::loop();
-        return true;
+        return StreamAPI::runOnce();
     } else {
-        return false;       
+        DEBUG_MSG("Client dropped connection, suspending API service\n");
+        enabled = false; // we no longer need to run
+        return 0;
     }
 }
 
@@ -50,7 +63,7 @@ WiFiServerPort::WiFiServerPort() : WiFiServer(MESHTASTIC_PORTNUM), concurrency::
 
 void WiFiServerPort::init()
 {
-    DEBUG_MSG("API server sistening on TCP port %d\n", MESHTASTIC_PORTNUM);
+    DEBUG_MSG("API server listening on TCP port %d\n", MESHTASTIC_PORTNUM);
     begin();
 }
 
@@ -67,18 +80,5 @@ int32_t WiFiServerPort::runOnce()
         openAPI = new WiFiServerAPI(client);
     }
 
-    if (openAPI) {
-        // Allow idle processing so the API can read from its incoming stream
-        if(!openAPI->loop()) {
-            // If our API link was up, shut it down
-
-            DEBUG_MSG("Client dropped connection, closing API client\n");
-            // Note: we can't call delete here because this object includes other state
-            // besides the stream API.  Instead kill it later when we start a new instance
-            delete openAPI;
-            openAPI = NULL;
-        }
-        return 0; // run fast while our API server is running
-    } else
-        return 100; // only check occasionally for incoming connections
+    return 100; // only check occasionally for incoming connections
 }

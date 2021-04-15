@@ -33,7 +33,7 @@ void fixPriority(MeshPacket *p)
     if (p->priority == MeshPacket_Priority_UNSET) {
         // if acks give high priority
         // if a reliable message give a bit higher default priority
-        p->priority = p->decoded.which_ackVariant ? MeshPacket_Priority_ACK :                
+        p->priority = (p->decoded.portnum == PortNum_ROUTING_APP) ? MeshPacket_Priority_ACK :                
                           (p->want_ack ? MeshPacket_Priority_RELIABLE : MeshPacket_Priority_DEFAULT);
     }
 }
@@ -71,7 +71,7 @@ static PacketId findId;
 
 static bool isMyPacket(MeshPacket *p)
 {
-    return p->id == findId && p->from == findFrom;
+    return p->id == findId && getFrom(p) == findFrom;
 }
 
 /** Attempt to find and remove a packet from this queue.  Returns true the packet which was removed from the queue */

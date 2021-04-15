@@ -10,15 +10,13 @@ PositionPlugin *positionPlugin;
 PositionPlugin::PositionPlugin()
     : ProtobufPlugin("position", PortNum_POSITION_APP, Position_fields), concurrency::OSThread("PositionPlugin")
 {
-    setIntervalFromNow(60 *
-                       1000); // Send our initial position 60 seconds after we start (to give GPS time to setup)
-
+    isPromiscuous = true;          // We always want to update our nodedb, even if we are sniffing on others
+    setIntervalFromNow(60 * 1000); // Send our initial position 60 seconds after we start (to give GPS time to setup)
 }
 
-bool PositionPlugin::handleReceivedProtobuf(const MeshPacket &mp, const Position &p)
+bool PositionPlugin::handleReceivedProtobuf(const MeshPacket &mp, const Position *pptr)
 {
-    // FIXME - we currently update position data in the DB only if the message was a broadcast or destined to us
-    // it would be better to update even if the message was destined to others.
+    auto p = *pptr;
 
     if (p.time) {
         struct timeval tv;
@@ -30,7 +28,7 @@ bool PositionPlugin::handleReceivedProtobuf(const MeshPacket &mp, const Position
         perhapsSetRTC(RTCQualityFromNet, &tv);
     }
 
-    nodeDB.updatePosition(mp.from, p);
+    nodeDB.updatePosition(getFrom(&mp), p);
 
     return false; // Let others look at this message also if they want
 }

@@ -12,7 +12,7 @@ typedef uint32_t PacketId; // A packet sequence number
 #define NODENUM_BROADCAST UINT32_MAX
 #define ERRNO_OK 0
 #define ERRNO_NO_INTERFACES 33
-#define ERRNO_UNKNOWN 32 // pick something that doesn't conflict with RH_ROUTER_ERROR_UNABLE_TO_DELIVER
+#define ERRNO_UNKNOWN 32  // pick something that doesn't conflict with RH_ROUTER_ERROR_UNABLE_TO_DELIVER
 #define ERRNO_DISABLED 34 // the itnerface is disabled
 
 /**
@@ -31,3 +31,9 @@ typedef int ErrorCode;
 
 /// Alloc and free packets to our global, ISR safe pool
 extern Allocator<MeshPacket> &packetPool;
+
+/**
+ * Most (but not always) of the time we want to treat packets 'from' the local phone (where from == 0), as if they originated on
+ * the local node. If from is zero this function returns our node number instead
+ */
+NodeNum getFrom(const MeshPacket *p);

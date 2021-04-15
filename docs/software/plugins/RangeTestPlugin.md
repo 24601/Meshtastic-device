@@ -26,7 +26,7 @@ These are the settings that can be configured.
 
 For basic usage, you will need two devices both with a GPS. A device with a paired phone with GPS may work, I have not tried it. 
 
-The first thing to do is to turn on the plugin. With the plugin turned on, the other settings will be available:
+The first thing to do is to turn on the plugin. The device will need to be restarted after appling the settings. With the plugin turned on, the other settings will be available:
 
 	range_test_plugin_enabled = 1
 
@@ -45,12 +45,54 @@ Recommended settings for a sender at different radio settings:
     Medium     ... range_test_plugin_sender = 15
     Short Fast ... range_test_plugin_sender = 15
 
+## Python API Examples
+
+### Sender 
+
+    meshtastic --set range_test_plugin_enabled 1
+    meshtastic --set range_test_plugin_sender 60
+
+### Receiver
+
+    meshtastic --set range_test_plugin_enabled 1
+    meshtastic --set range_test_plugin_save 1
+
 ## Other things to keep in mind
 
 Be sure to turn off either the plugin configured as a sender or the device where the plugin setup as sender when not in use. This will use a lot of time on air and will spam your channel.
 
 Also be mindful of your space usage on the file system. It has protections from filling up the space but it's best to delete old range test results.
 
+# Application Examples
+
+## Google Integration
+
+@jfirwin on our forum [meshtastic.discourse.org](https://meshtastic.discourse.group/t/new-plugin-rangetestplugin/2591/49?u=mc-hamster) shared how to integrate the resulting csv file with Google Products.
+
+### Earth
+
+Steps:
+
+1. [Download](https://www.google.com/earth/versions/#download-pro) 1 and open Google Earth
+   1. Select File > Import
+   2. Select CSV
+   3. Select Delimited, Comma
+   4. Make sure the button that states “This dataset does not contain latitude/longitude information, but street addresses” is unchecked
+   5. Select “rx lat” & “rx long” for the appropriate lat/lng fields
+   6. Click finish
+2. When it prompts you to create a style template, click yes.
+   1. Set the name field to whichever column you want to be displayed on the map (don’t worry about this too much, when you click on an icon, all the relavant data appears)
+   2. select a color, icon, etc. and hit ok.
+
+Your data will load onto the map, make sure to click the checkbox next to your dataset in the sidebar to view it.
+
+### My Maps
+
+You can use [My Maps](http://mymaps.google.com/). It takes CSVs and the whole interface is much easier to work with.
+
+Google has instructions on how to do that [here](https://support.google.com/mymaps/answer/3024836?co=GENIE.Platform%3DDesktop&hl=en#zippy=%2Cstep-prepare-your-info%2Cstep-import-info-into-the-map).
+
+You can style the ranges differently based on the values, so you can have the pins be darker the if the SNR or RSSI (if that gets added) is higher. 
 
 # Known Problems
 

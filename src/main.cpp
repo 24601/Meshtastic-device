@@ -1,11 +1,11 @@
 
-#include "Air530GPS.h"
+#include "GPS.h"
 #include "MeshRadio.h"
 #include "MeshService.h"
 #include "NodeDB.h"
 #include "PowerFSM.h"
-#include "UBloxGPS.h"
 #include "airtime.h"
+#include "buzz.h"
 #include "configuration.h"
 #include "error.h"
 #include "power.h"
@@ -30,6 +30,11 @@
 #include "mesh/http/WebServer.h"
 #include "mesh/http/WiFiAPClient.h"
 #include "nimble/BluetoothUtil.h"
+#endif
+
+#if defined(HAS_WIFI) || defined(PORTDUINO)
+#include "mesh/wifi/WiFiServerAPI.h"
+#include "mqtt/MQTT.h"
 #endif
 
 #include "RF95Interface.h"
@@ -63,7 +68,7 @@ Router *router = NULL; // Users of router don't care what sort of subclass imple
 // -----------------------------------------------------------------------------
 // Application
 // -----------------------------------------------------------------------------
-
+#ifndef NO_WIRE
 void scanI2Cdevice(void)
 {
     byte err, addr;
@@ -100,6 +105,9 @@ void scanI2Cdevice(void)
     else
         DEBUG_MSG("done\n");
 }
+#else
+void scanI2Cdevice(void) {}
+#endif
 
 const char *getDeviceName()
 {
@@ -169,6 +177,7 @@ class ButtonThread : public OSThread
 #ifdef BUTTON_PIN_ALT
     OneButton userButtonAlt;
 #endif
+    static bool shutdown_on_long_stop;
 
   public:
     static uint32_t longPressTime;
@@ -235,12 +244,22 @@ class ButtonThread : public OSThread
         // DEBUG_MSG("Long press!\n");
         screen->adjustBrightness();
 
-        // If user button is held down for 10 seconds, shutdown the device.
-        if (millis() - longPressTime > 10 * 1000) {
+        // If user button is held down for 5 seconds, shutdown the device.
+        if (millis() - longPressTime > 5 * 1000) {
 #ifdef TBEAM_V10
             if (axp192_found == true) {
                 setLed(false);
                 power->shutdown();
+            }
+#elif NRF52_SERIES
+            // Do actual shutdown when button released, otherwise the button release
+            // may wake the board immediatedly.
+            if (!shutdown_on_long_stop) {
+                DEBUG_MSG("Shutdown from long press");
+                playBeep();
+                ledOff(PIN_LED1);
+                ledOff(PIN_LED2);
+                shutdown_on_long_stop = true;
             }
 #endif
         } else {
@@ -265,8 +284,14 @@ class ButtonThread : public OSThread
     {
         DEBUG_MSG("Long press stop!\n");
         longPressTime = 0;
+        if (shutdown_on_long_stop) {
+            playShutdownMelody();
+            power->shutdown();
+        }
     }
 };
+
+bool ButtonThread::shutdown_on_long_stop = false;
 
 static Periodic *ledPeriodic;
 static OSThread *powerFSMthread, *buttonThread;
@@ -279,16 +304,19 @@ void setup()
     concurrency::hasBeenSetup = true;
 
 #ifdef SEGGER_STDOUT_CH
-    SEGGER_RTT_ConfigUpBuffer(SEGGER_STDOUT_CH, NULL, NULL, 1024, SEGGER_RTT_MODE_NO_BLOCK_TRIM);
+    auto mode = false ? SEGGER_RTT_MODE_BLOCK_IF_FIFO_FULL : SEGGER_RTT_MODE_NO_BLOCK_TRIM;
+#ifdef NRF52840_XXAA
+    auto buflen = 4096; // this board has a fair amount of ram
+#else
+    auto buflen = 256; // this board has a fair amount of ram
+#endif
+    SEGGER_RTT_ConfigUpBuffer(SEGGER_STDOUT_CH, NULL, NULL, buflen, mode);
 #endif
 
-#ifdef USE_SEGGER
-    SEGGER_RTT_ConfigUpBuffer(0, NULL, NULL, 0, SEGGER_RTT_MODE_NO_BLOCK_TRIM);
-#endif
-
-// Debug
 #ifdef DEBUG_PORT
-    DEBUG_PORT.init(); // Set serial baud rate and init our mesh console
+    if (!radioConfig.preferences.serial_disabled) {
+        consoleInit(); // Set serial baud rate and init our mesh console
+    }
 #endif
 
     initDeepSleep();
@@ -335,7 +363,7 @@ void setup()
 
 #ifdef I2C_SDA
     Wire.begin(I2C_SDA, I2C_SCL);
-#else
+#elif !defined(NO_WIRE)
     Wire.begin();
 #endif
 
@@ -359,7 +387,7 @@ void setup()
 #endif
 
     // Hello
-    DEBUG_MSG("Meshtastic swver=%s, hwver=%s\n", optstr(APP_VERSION), optstr(HW_VERSION));
+    DEBUG_MSG("Meshtastic hwvendor=%d, swver=%s, hwver=%s\n", HW_VENDOR, optstr(APP_VERSION), optstr(HW_VERSION));
 
 #ifndef NO_ESP32
     // Don't init display if we don't have one or we are waking headless due to a timer event
@@ -372,7 +400,7 @@ void setup()
 #ifdef NRF52_SERIES
     nrf52Setup();
 #endif
-
+    playStartMelody();
     // We do this as early as possible because this loads preferences from flash
     // but we need to do this after main cpu iniot (esp32setup), because we need the random seed set
     nodeDB.init();
@@ -399,8 +427,12 @@ void setup()
     readFromRTC(); // read the main CPU RTC at first (in case we can't get GPS time)
 
 #ifdef GENIEBLOCKS
-    // gps setup
-    pinMode(GPS_RESET_N, OUTPUT);
+    Im intentionally breaking your build so you see this note.Feel free to revert if not correct.I think you can
+            remove this GPS_RESET_N code by instead defining PIN_GPS_RESET and
+        use the shared code in GPS.cpp instead.- geeksville
+
+                                                     // gps setup
+                                                     pinMode(GPS_RESET_N, OUTPUT);
     pinMode(GPS_EXTINT, OUTPUT);
     digitalWrite(GPS_RESET_N, HIGH);
     digitalWrite(GPS_EXTINT, LOW);
@@ -410,34 +442,7 @@ void setup()
     pinMode(BATTERY_EN_PIN, OUTPUT);
     digitalWrite(BATTERY_EN_PIN, LOW);
 #endif
-
-    // If we don't have bidirectional comms, we can't even try talking to UBLOX
-    UBloxGPS *ublox = NULL;
-#ifdef GPS_TX_PIN
-    // Init GPS - first try ublox
-    ublox = new UBloxGPS();
-    gps = ublox;
-    if (!gps->setup()) {
-        DEBUG_MSG("ERROR: No UBLOX GPS found\n");
-
-        delete ublox;
-        gps = ublox = NULL;
-    }
-#endif
-
-    if (!gps && GPS::_serial_gps) {
-        // Some boards might have only the TX line from the GPS connected, in that case, we can't configure it at all.  Just
-        // assume NMEA at 9600 baud.
-        // dumb NMEA access only work for serial GPSes)
-        DEBUG_MSG("Hoping that NMEA might work\n");
-
-#ifdef HAS_AIR530_GPS
-        gps = new Air530GPS();
-#else
-        gps = new NMEAGPS();
-#endif
-        gps->setup();
-    }
+    gps = createGps();
 
     if (gps)
         gpsStatus->observe(&gps->newStatus);
@@ -471,8 +476,8 @@ void setup()
     // We have now loaded our saved preferences from flash
 
     // ONCE we will factory reset the GPS for bug #327
-    if (ublox && !devicestate.did_gps_reset) {
-        if (ublox->factoryReset()) { // If we don't succeed try again next time
+    if (gps && !devicestate.did_gps_reset) {
+        if (gps->factoryReset()) { // If we don't succeed try again next time
             devicestate.did_gps_reset = true;
             nodeDB.saveToDisk();
         }
@@ -533,6 +538,14 @@ void setup()
     webServerThread = new WebServerThread();
 #endif
 
+#ifdef PORTDUINO
+    initApiServer();
+#endif
+
+#if defined(PORTDUINO) || defined(HAS_WIFI)
+    mqttInit();
+#endif
+
     // Start airtime logger thread.
     airTime = new AirTime();
 
@@ -570,19 +583,39 @@ Periodic axpDebugOutput(axpDebugRead);
 axpDebugOutput.setup();
 #endif
 
+uint32_t rebootAtMsec; // If not zero we will reboot at this time (used to reboot shortly after the update completes)
+
+void rebootCheck()
+{
+    if (rebootAtMsec && millis() > rebootAtMsec) {
+#ifndef NO_ESP32
+        DEBUG_MSG("Rebooting for update\n");
+        ESP.restart();
+#else
+        DEBUG_MSG("FIXME implement reboot for this platform");
+#endif
+    }
+}
+
+// If a thread does something that might need for it to be rescheduled ASAP it can set this flag
+// This will supress the current delay and instead try to run ASAP.
+bool runASAP;
+
 void loop()
 {
-    // axpDebugOutput.loop();
+    runASAP = false;
 
-#ifdef DEBUG_PORT
-    DEBUG_PORT.loop(); // Send/receive protobufs over the serial port
-#endif
+    // axpDebugOutput.loop();
 
     // heap_caps_check_integrity_all(true); // FIXME - disable this expensive check
 
 #ifndef NO_ESP32
     esp32Loop();
 #endif
+#ifdef NRF52_SERIES
+    nrf52Loop();
+#endif
+    rebootCheck();
 
     // For debugging
     // if (rIf) ((RadioLibInterface *)rIf)->isActivelyReceiving();
@@ -607,6 +640,7 @@ void loop()
                   mainController.nextThread->tillRun(millis())); */
 
     // We want to sleep as long as possible here - because it saves power
-    mainDelay.delay(delayMsec);
+    if (!runASAP)
+        mainDelay.delay(delayMsec);
     // if (didWake) DEBUG_MSG("wake!\n");
 }

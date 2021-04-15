@@ -35,9 +35,9 @@ int32_t RangeTestPlugin::runOnce()
         without having to configure it from the PythonAPI or WebUI.
     */
 
-    //radioConfig.preferences.range_test_plugin_enabled = 1;
-    //radioConfig.preferences.range_test_plugin_sender = 45;
-    //radioConfig.preferences.range_test_plugin_save = 1;
+    // radioConfig.preferences.range_test_plugin_enabled = 1;
+    // radioConfig.preferences.range_test_plugin_sender = 45;
+    // radioConfig.preferences.range_test_plugin_save = 1;
 
     // Fixed position is useful when testing indoors.
     // radioConfig.preferences.fixed_position = 1;
@@ -112,10 +112,10 @@ void RangeTestPluginRadio::sendPayload(NodeNum dest, bool wantReplies)
     packetSequence++;
 
     static char heartbeatString[20];
-    snprintf(heartbeatString, sizeof(heartbeatString), "seq %d", packetSequence);
+    snprintf(heartbeatString, sizeof(heartbeatString), "seq %u", packetSequence);
 
-    p->decoded.data.payload.size = strlen(heartbeatString); // You must specify how many bytes are in the reply
-    memcpy(p->decoded.data.payload.bytes, heartbeatString, p->decoded.data.payload.size);
+    p->decoded.payload.size = strlen(heartbeatString); // You must specify how many bytes are in the reply
+    memcpy(p->decoded.payload.bytes, heartbeatString, p->decoded.payload.size);
 
     service.sendToMesh(p);
 
@@ -129,11 +129,11 @@ bool RangeTestPluginRadio::handleReceived(const MeshPacket &mp)
 
     if (radioConfig.preferences.range_test_plugin_enabled) {
 
-        auto &p = mp.decoded.data;
+        auto &p = mp.decoded;
         // DEBUG_MSG("Received text msg self=0x%0x, from=0x%0x, to=0x%0x, id=%d, msg=%.*s\n",
         //          nodeDB.getNodeNum(), mp.from, mp.to, mp.id, p.payload.size, p.payload.bytes);
 
-        if (mp.from != nodeDB.getNodeNum()) {
+        if (getFrom(&mp) != nodeDB.getNodeNum()) {
 
             // DEBUG_MSG("* * Message came from the mesh\n");
             // Serial2.println("* * Message came from the mesh");
@@ -144,7 +144,7 @@ bool RangeTestPluginRadio::handleReceived(const MeshPacket &mp)
 
             */
 
-            NodeInfo *n = nodeDB.getNode(mp.from);
+            NodeInfo *n = nodeDB.getNode(getFrom(&mp));
 
             if (radioConfig.preferences.range_test_plugin_save) {
                 appendFile(mp);
@@ -207,9 +207,9 @@ float RangeTestPluginRadio::latLongToMeter(double lat_a, double lng_a, double la
 
 bool RangeTestPluginRadio::appendFile(const MeshPacket &mp)
 {
-    auto &p = mp.decoded.data;
+    auto &p = mp.decoded;
 
-    NodeInfo *n = nodeDB.getNode(mp.from);
+    NodeInfo *n = nodeDB.getNode(getFrom(&mp));
     /*
         DEBUG_MSG("-----------------------------------------\n");
         DEBUG_MSG("p.payload.bytes  \"%s\"\n", p.payload.bytes);
@@ -255,7 +255,9 @@ bool RangeTestPluginRadio::appendFile(const MeshPacket &mp)
             return 0;
         }
 
-        if (fileToWrite.println("time,from,sender name,sender lat,sender long,rx lat,rx long,rx snr,distance,payload")) {
+        // Print the CSV header
+        if (fileToWrite.println(
+                "time,from,sender name,sender lat,sender long,rx lat,rx long,rx snr,rx elevation,distance,payload")) {
             DEBUG_MSG("File was written\n");
         } else {
             DEBUG_MSG("File write failed\n");
@@ -290,13 +292,15 @@ bool RangeTestPluginRadio::appendFile(const MeshPacket &mp)
         fileToAppend.printf("??:??:??,"); // Time
     }
 
-    fileToAppend.printf("%d,", mp.from);                          // From
+    fileToAppend.printf("%d,", getFrom(&mp));                     // From
     fileToAppend.printf("%s,", n->user.long_name);                // Long Name
     fileToAppend.printf("%f,", n->position.latitude_i * 1e-7);    // Sender Lat
     fileToAppend.printf("%f,", n->position.longitude_i * 1e-7);   // Sender Long
     fileToAppend.printf("%f,", gpsStatus->getLatitude() * 1e-7);  // RX Lat
     fileToAppend.printf("%f,", gpsStatus->getLongitude() * 1e-7); // RX Long
-    fileToAppend.printf("%f,", mp.rx_snr);                        // RX SNR
+    fileToAppend.printf("%d,", gpsStatus->getAltitude());         // RX Altitude
+
+    fileToAppend.printf("%f,", mp.rx_snr); // RX SNR
 
     if (n->position.latitude_i && n->position.longitude_i && gpsStatus->getLatitude() && gpsStatus->getLongitude()) {
         float distance = latLongToMeter(n->position.latitude_i * 1e-7, n->position.longitude_i * 1e-7,
